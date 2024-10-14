@@ -7,7 +7,7 @@ from collections import defaultdict
 from typing import List, Dict, Optional, Tuple
 import re
 from sentence_transformers import SentenceTransformer
-
+from sklearn.cluster import KMeans
 
 # Constants
 COCO_CLASSES = [
@@ -51,12 +51,15 @@ class FurnitureRecommendationSystem:
         # Load the SentenceTransformer model for generating text embeddings
         self.model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
 
+    # Replace the old extract_average_color method with:
     def analyze_room(self, image_path: str) -> Dict[str, List[str]]:
-        # Load and analyze the room image
+        """Analyze room image for average color and dominant colors, along with detected objects."""
         image = cv2.imread(image_path)
         avg_color = self.extract_average_color(image)
+        dominant_colors = self.extract_dominant_colors(image)
         detected_objects = self.detect_objects(image)
-        return {'average_color': avg_color, 'detected_objects': detected_objects}
+        
+        return {'average_color': avg_color, 'dominant_colors': dominant_colors, 'detected_objects': detected_objects}
 
     def extract_average_color(self, image) -> str:
         # Calculate the average color in RGB space
@@ -87,39 +90,6 @@ class FurnitureRecommendationSystem:
 
         return list(set(detected_classes))  # Return unique detected objects
 
-
-    def recommend_furniture(self, room_analysis: Dict[str, List[str]], furniture_categories: List[str]) -> List[Dict[str, str]]:
-        recommended_items = []
-        # Assuming self.dataset is your DataFrame containing 'title', 'categories', and 'description'
-        self.dataset['combined'] = self.dataset['title'].fillna('') + ' ' + self.dataset['categories'].fillna('')
-
-        for category in furniture_categories:
-            category_items = self.dataset[self.dataset['combined'].str.contains(category, case=False)]
-            if not category_items.empty:
-                for _, item in category_items.iterrows():
-                    # Calculate similarity based on multiple criteria
-                    color_similarity = self.calculate_similarity(room_analysis['average_color'], item['details'])
-                    # description_similarity = self.calculate_similarity(room_analysis['average_color'], item['description'])
-                    description_similarity = self.calculate_advanced_similarity(
-                        room_analysis['detected_objects'], item['details'], item['description']
-                    )
-                    # Additional features
-                    detected_object_similarity = self.calculate_object_match(room_analysis['detected_objects'], item['title'])
-                    size_fit = self.calculate_size_match(room_analysis.get('room_size'), item['details'])  # Optional
-
-                    # Aggregate the scores (You can use different weights for each criterion)
-                    overall_similarity = (0.4 * color_similarity + 0.4 * description_similarity +
-                                        0.1 * detected_object_similarity + 0.1 * size_fit)
-
-                    recommended_items.append({
-                        'Title': item['title'],
-                        'Details': item['details'],
-                        'Similarity': overall_similarity
-                    })
-
-        # Sort by overall similarity score
-        recommended_items.sort(key=lambda x: x['Similarity'], reverse=True)
-        return recommended_items[:10]  # Return top 10 recommendations
 
     def calculate_similarity(self, room_color: str, furniture_details: str) -> float:
         # Example similarity calculation based on color and text
@@ -163,16 +133,16 @@ class FurnitureRecommendationSystem:
         }
         return any(item in furniture_title.lower() for item in complementary_map.get(object_name.lower(), []))
 
-    def calculate_size_match(self, room_size: Optional[float], furniture_details: str) -> float:
-        # This is a placeholder for matching the room size with furniture dimensions (requires actual data)
-        if room_size and 'dimensions' in furniture_details:
-            # Parse dimensions from details and calculate whether the furniture fits
-            furniture_size = self.extract_furniture_size(furniture_details)
-            if furniture_size <= room_size:
-                return 1.0  # Perfect fit
-            else:
-                return 0.5  # Not ideal, but still might fit
-        return 0.0  # No size match
+    # def calculate_size_match(self, room_size: Optional[float], furniture_details: str) -> float:
+    #     # This is a placeholder for matching the room size with furniture dimensions (requires actual data)
+    #     if room_size and 'dimensions' in furniture_details:
+    #         # Parse dimensions from details and calculate whether the furniture fits
+    #         furniture_size = self.extract_furniture_size(furniture_details)
+    #         if furniture_size <= room_size:
+    #             return 1.0  # Perfect fit
+    #         else:
+    #             return 0.5  # Not ideal, but still might fit
+    #     return 0.0  # No size match
     
     def calculate_advanced_similarity(self, detected_objects: List[str], details: str, description: str) -> float:
         # Combine details and description into one text block for semantic similarity
@@ -186,6 +156,111 @@ class FurnitureRecommendationSystem:
         # Calculate cosine similarity between the embeddings
         similarity_score = cosine_similarity(room_embedding, furniture_embedding)[0][0]
         return similarity_score
+    def extract_dominant_colors(self, image, k=3) -> List[str]:
+        """Extract dominant colors using k-means clustering."""
+        pixels = image.reshape((-1, 3))
+        kmeans = KMeans(n_clusters=k)
+        kmeans.fit(pixels)
+        dominant_colors = kmeans.cluster_centers_.astype(int)
+        dominant_colors_hex = [
+            '#{:02x}{:02x}{:02x}'.format(int(color[2]), int(color[1]), int(color[0]))
+            for color in dominant_colors
+        ]
+        return dominant_colors_hex
+    
+    def calculate_multi_object_match(self, detected_objects: List[str], furniture_title: str) -> float:
+        # Initialize match score
+        match_score = 0.0
+        
+        # Check for complementary furniture based on detected objects
+        for obj in detected_objects:
+            if obj.lower() in furniture_title.lower():
+                match_score += 0.5  # Adjust weights as necessary
+            elif self.is_complementary(obj, furniture_title):
+                match_score += 0.3  # Complementary furniture like coffee table + sofa
+
+        # Normalize the score based on the number of detected objects
+        return match_score / max(1, len(detected_objects))
+    
+    def extract_furniture_size(self, furniture_details: str) -> Optional[Tuple[float, float, float]]:
+        """Extract the dimensions (width, height, depth) from the furniture details using regex."""
+        size_pattern = r'(\d+\.?\d*)\s*(cm|in|ft)\s*x\s*(\d+\.?\d*)\s*(cm|in|ft)\s*x\s*(\d+\.?\d*)\s*(cm|in|ft)'
+        match = re.search(size_pattern, furniture_details)
+        if match:
+            width = float(match.group(1))
+            height = float(match.group(3))
+            depth = float(match.group(5))
+            return width, height, depth
+        return None
+
+    def calculate_size_match(self, room_size: Optional[float], furniture_details: str) -> float:
+        if room_size:
+            furniture_size = self.extract_furniture_size(furniture_details)
+            if furniture_size:
+                # Assume room_size is in square feet and compare
+                furniture_area = furniture_size[0] * furniture_size[2]  # Width x Depth
+                if furniture_area <= room_size:
+                    return 1.0  # Perfect fit
+                elif furniture_area <= room_size * 1.2:  # Slightly larger
+                    return 0.7  # Okay fit
+                else:
+                    return 0.3  # Doesn't fit well
+        return 0.0  # No match
+    
+    def calculate_color_similarity(self, room_color: str, furniture_details: str) -> float:
+        """Calculate color similarity between the room color (hex) and the furniture description."""
+        # Check if the color is mentioned in the furniture details (simplistic)
+        if room_color.lower() in furniture_details.lower():
+            return 1.0  # Perfect match
+        return 0.0  # No match
+    
+    def recommend_furniture(self, room_analysis: Dict[str, List[str]], furniture_categories: List[str], 
+                        avg_color_weight=0.2, dominant_color_weight=0.2, description_weight=0.4, 
+                        object_weight=0.1, size_weight=0.1) -> List[Dict[str, str]]:
+        recommended_items = []
+        self.dataset['combined'] = self.dataset['title'].fillna('') + ' ' + self.dataset['categories'].fillna('')
+
+        for category in furniture_categories:
+            category_items = self.dataset[self.dataset['combined'].str.contains(category, case=False)]
+            if not category_items.empty:
+                for _, item in category_items.iterrows():
+                    # Calculate average color similarity
+                    avg_color_similarity = self.calculate_color_similarity(room_analysis['average_color'], item['details'])
+
+                    # Calculate dominant colors similarity (assumes the dominant colors are a list)
+                    dominant_color_similarities = [
+                        self.calculate_color_similarity(color, item['details']) for color in room_analysis['dominant_colors']
+                    ]
+                    dominant_color_similarity = max(dominant_color_similarities)  # Use the best match from dominant colors
+
+                    # Calculate description, object, and size similarities
+                    description_similarity = self.calculate_advanced_similarity(
+                        room_analysis['detected_objects'], item['details'], item['description']
+                    )
+                    detected_object_similarity = self.calculate_multi_object_match(room_analysis['detected_objects'], item['title'])
+                    size_fit = self.calculate_size_match(room_analysis.get('room_size'), item['details'])
+
+                    # multi_object_match_score = self.calculate_multi_object_match(room_analysis['detected_objects'], item['title'])
+
+                    # Combine the similarities with the specified weights
+                    overall_similarity = (
+                        avg_color_weight * avg_color_similarity +
+                        dominant_color_weight * dominant_color_similarity +
+                        description_weight * description_similarity +
+                        object_weight * detected_object_similarity +
+                        size_weight * size_fit
+                    )
+
+                    recommended_items.append({
+                        'Title': item['title'],
+                        'Details': item['details'],
+                        'Similarity': overall_similarity
+                    })
+
+        # Sort items by similarity and return the top recommendations
+        recommended_items.sort(key=lambda x: x['Similarity'], reverse=True)
+        return recommended_items[:10]
+
 
 # Example usage
 if __name__ == "__main__":
