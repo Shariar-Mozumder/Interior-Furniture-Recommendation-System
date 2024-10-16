@@ -133,16 +133,6 @@ class FurnitureRecommendationSystem:
         }
         return any(item in furniture_title.lower() for item in complementary_map.get(object_name.lower(), []))
 
-    # def calculate_size_match(self, room_size: Optional[float], furniture_details: str) -> float:
-    #     # This is a placeholder for matching the room size with furniture dimensions (requires actual data)
-    #     if room_size and 'dimensions' in furniture_details:
-    #         # Parse dimensions from details and calculate whether the furniture fits
-    #         furniture_size = self.extract_furniture_size(furniture_details)
-    #         if furniture_size <= room_size:
-    #             return 1.0  # Perfect fit
-    #         else:
-    #             return 0.5  # Not ideal, but still might fit
-    #     return 0.0  # No size match
     
     def calculate_advanced_similarity(self, detected_objects: List[str], details: str, description: str) -> float:
         # Combine details and description into one text block for semantic similarity
@@ -267,11 +257,11 @@ if __name__ == "__main__":
     dataset_path = "data_for_test_2_1.csv"  # Path to your dataset
     system = FurnitureRecommendationSystem(dataset_path)
 
-    image_path = "img1.jpg"  # Path to the room image
+    image_path = "img3.jpg"  # Path to the room image
     room_analysis = system.analyze_room(image_path)
     print(room_analysis)
 
-    furniture_categories = ['bed']  # Example categories
+    furniture_categories = ['bed','lamp']  # Example categories
     recommendations = system.recommend_furniture(room_analysis, furniture_categories)
 
     # Output recommendations
